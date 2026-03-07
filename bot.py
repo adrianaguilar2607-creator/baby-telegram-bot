@@ -33,10 +33,13 @@ TUMMY_TIME_MINUTE = 30
 CALM_DOWN_HOUR = 18
 CALM_DOWN_MINUTE = 0
 
+# Botones
 BUTTON_FEED_NOW = "🍼 Comida ahora"
 BUTTON_FEED_TIME = "🍼 Comida con hora"
-BUTTON_NAP_NOW = "😴 Siesta ahora"
-BUTTON_NAP_TIME = "😴 Siesta con hora"
+BUTTON_NAP_START_NOW = "😴 Siesta inicia ahora"
+BUTTON_NAP_END_NOW = "😴 Siesta termina ahora"
+BUTTON_NIGHT_START_NOW = "🌙 Noche inicia ahora"
+BUTTON_NIGHT_END_NOW = "🌙 Noche termina ahora"
 BUTTON_STATUS = "📊 Ver estado"
 BUTTON_HISTORY = "📅 Historial de hoy"
 
@@ -56,7 +59,7 @@ STATE: Dict[str, Any] = {}
 
 
 # =========================
-# Utilidades de datos
+# Utilidades base
 # =========================
 def now_local() -> datetime:
     return datetime.now(TIMEZONE)
@@ -80,12 +83,98 @@ def str_to_dt(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def fmt_time(dt: Optional[datetime]) -> str:
+    return dt.strftime("%H:%M") if dt else "—"
+
+
+def fmt_datetime(dt: Optional[datetime]) -> str:
+    return dt.strftime("%d/%m %H:%M") if dt else "—"
+
+
+def keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BUTTON_FEED_NOW, BUTTON_FEED_TIME],
+            [BUTTON_NAP_START_NOW, BUTTON_NAP_END_NOW],
+            [BUTTON_NIGHT_START_NOW, BUTTON_NIGHT_END_NOW],
+            [BUTTON_STATUS, BUTTON_HISTORY],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
+def parse_time_text(text: str) -> Optional[Tuple[int, int]]:
+    try:
+        parts = text.strip().split(":")
+        if len(parts) != 2:
+            return None
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour, minute
+    except Exception:
+        return None
+
+
+def parse_manual_time(text: str) -> Optional[datetime]:
+    parsed = parse_time_text(text)
+    if not parsed:
+        return None
+    hour, minute = parsed
+    now = now_local()
+    return datetime(
+        year=now.year,
+        month=now.month,
+        day=now.day,
+        hour=hour,
+        minute=minute,
+        tzinfo=TIMEZONE,
+    )
+
+
+def format_remaining(target_dt: Optional[datetime]) -> str:
+    if target_dt is None:
+        return "—"
+
+    diff = target_dt - now_local()
+    total_seconds = int(diff.total_seconds())
+
+    if total_seconds <= 0:
+        minutes_late = abs(total_seconds) // 60
+        if minutes_late == 0:
+            return "ahora"
+        return f"retrasado {minutes_late} min"
+
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    if hours > 0:
+        return f"{hours} h {minutes} min"
+    return f"{minutes} min"
+
+
+def format_duration(delta: timedelta) -> str:
+    total_minutes = int(delta.total_seconds() // 60)
+    if total_minutes < 0:
+        total_minutes = 0
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    return f"{hours} h {minutes} min"
+
+
+# =========================
+# Persistencia
+# =========================
 def default_chat_state() -> Dict[str, Any]:
     return {
         "chat_id": None,
         "baby_name": "bebé",
         "last_feed": None,
-        "last_nap": None,
+        "last_day_nap_end": None,
+        "active_day_nap_start": None,
+        "active_night_sleep_start": None,
         "history": [],
         "reminders": {
             "feed_15_sent": False,
@@ -135,6 +224,7 @@ def get_chat_state(chat_id: int) -> Dict[str, Any]:
 
     current = chats[chat_key]
     base = default_chat_state()
+
     for key, value in base.items():
         if key not in current:
             current[key] = deepcopy(value)
@@ -149,109 +239,95 @@ def cleanup_old_history(chat_data: Dict[str, Any]) -> None:
         chat_data["history"] = []
         return
 
-    cutoff_date = now_local().date() - timedelta(days=7)
+    cutoff = now_local() - timedelta(days=14)
     cleaned = []
     for item in history:
         if not isinstance(item, dict):
             continue
         dt = str_to_dt(item.get("time"))
-        if dt and dt.date() >= cutoff_date:
+        if dt and dt >= cutoff:
             cleaned.append(item)
+
     chat_data["history"] = cleaned
 
 
-def add_history(chat_data: Dict[str, Any], event_type: str, event_dt: datetime) -> None:
+def add_history_event(chat_data: Dict[str, Any], event_type: str, dt: datetime, extra: Optional[Dict[str, Any]] = None) -> None:
     cleanup_old_history(chat_data)
+    item = {
+        "type": event_type,
+        "time": dt_to_str(dt),
+    }
+    if extra:
+        item.update(extra)
     history = chat_data.setdefault("history", [])
-    history.append(
-        {
-            "type": event_type,
-            "time": dt_to_str(event_dt),
-        }
-    )
+    history.append(item)
     history.sort(key=lambda x: x.get("time", ""))
 
 
-def get_today_history(chat_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+# =========================
+# Cálculos de siesta / noche
+# =========================
+def get_today_events(chat_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     today = now_local().date()
     result = []
+
     for item in chat_data.get("history", []):
         dt = str_to_dt(item.get("time"))
         if dt and dt.date() == today:
-            result.append({"type": item.get("type", ""), "dt": dt})
+            row = dict(item)
+            row["dt"] = dt
+            result.append(row)
+
     result.sort(key=lambda x: x["dt"])
     return result
 
 
-def parse_time_text(text: str) -> Optional[Tuple[int, int]]:
-    try:
-        parts = text.strip().split(":")
-        if len(parts) != 2:
-            return None
-        hour = int(parts[0])
-        minute = int(parts[1])
-        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-            return None
-        return hour, minute
-    except Exception:
+def completed_day_naps_today(chat_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    today = now_local().date()
+    result = []
+
+    for item in chat_data.get("history", []):
+        if item.get("type") != "day_nap_end":
+            continue
+
+        end_dt = str_to_dt(item.get("time"))
+        start_dt = str_to_dt(item.get("start_time"))
+        if not end_dt or not start_dt:
+            continue
+
+        if end_dt.date() != today and start_dt.date() != today:
+            continue
+
+        result.append(
+            {
+                "start": start_dt,
+                "end": end_dt,
+                "duration": end_dt - start_dt,
+            }
+        )
+
+    result.sort(key=lambda x: x["start"])
+    return result
+
+
+def total_day_nap_today(chat_data: Dict[str, Any]) -> timedelta:
+    total = timedelta()
+    for nap in completed_day_naps_today(chat_data):
+        if nap["duration"].total_seconds() > 0:
+            total += nap["duration"]
+
+    active_start = str_to_dt(chat_data.get("active_day_nap_start"))
+    if active_start and active_start.date() == now_local().date():
+        total += now_local() - active_start
+
+    return total
+
+
+def last_completed_day_nap(chat_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    naps = completed_day_naps_today(chat_data)
+    if not naps:
         return None
-
-
-def parse_manual_time(text: str) -> Optional[datetime]:
-    parsed = parse_time_text(text)
-    if not parsed:
-        return None
-    hour, minute = parsed
-    now = now_local()
-    return datetime(
-        year=now.year,
-        month=now.month,
-        day=now.day,
-        hour=hour,
-        minute=minute,
-        tzinfo=TIMEZONE,
-    )
-
-
-def fmt_time(dt: Optional[datetime]) -> str:
-    return dt.strftime("%H:%M") if dt else "—"
-
-
-def fmt_datetime(dt: Optional[datetime]) -> str:
-    return dt.strftime("%d/%m %H:%M") if dt else "—"
-
-
-def format_remaining(target_dt: Optional[datetime]) -> str:
-    if target_dt is None:
-        return "—"
-
-    diff = target_dt - now_local()
-    total_seconds = int(diff.total_seconds())
-
-    if total_seconds <= 0:
-        minutes_late = abs(total_seconds) // 60
-        if minutes_late == 0:
-            return "ahora"
-        return f"retrasado {minutes_late} min"
-
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-
-    if hours > 0:
-        return f"{hours} h {minutes} min"
-    return f"{minutes} min"
-
-
-def keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [
-            [BUTTON_FEED_NOW, BUTTON_NAP_NOW],
-            [BUTTON_FEED_TIME, BUTTON_NAP_TIME],
-            [BUTTON_STATUS, BUTTON_HISTORY],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+    return naps[-1]
 
 
 def next_feed_time(chat_data: Dict[str, Any]) -> Optional[datetime]:
@@ -261,11 +337,15 @@ def next_feed_time(chat_data: Dict[str, Any]) -> Optional[datetime]:
     return last_feed + FEED_INTERVAL
 
 
-def next_nap_time(chat_data: Dict[str, Any]) -> Optional[datetime]:
-    last_nap = str_to_dt(chat_data.get("last_nap"))
-    if not last_nap:
+def next_day_nap_time(chat_data: Dict[str, Any]) -> Optional[datetime]:
+    active_start = str_to_dt(chat_data.get("active_day_nap_start"))
+    if active_start:
         return None
-    return last_nap + NAP_INTERVAL
+
+    last_day_nap_end = str_to_dt(chat_data.get("last_day_nap_end"))
+    if not last_day_nap_end:
+        return None
+    return last_day_nap_end + NAP_INTERVAL
 
 
 def reset_feed_reminders(chat_data: Dict[str, Any]) -> None:
@@ -283,11 +363,122 @@ def baby_name(chat_data: Dict[str, Any]) -> str:
     return name if name else "bebé"
 
 
+# =========================
+# Registro de eventos
+# =========================
+def register_feed(chat_data: Dict[str, Any], event_dt: datetime) -> None:
+    chat_data["last_feed"] = dt_to_str(event_dt)
+    add_history_event(chat_data, "feed", event_dt)
+    reset_feed_reminders(chat_data)
+    save_data()
+
+
+def start_day_nap(chat_data: Dict[str, Any], start_dt: datetime) -> Tuple[bool, str]:
+    if str_to_dt(chat_data.get("active_day_nap_start")):
+        return False, "Ya hay una siesta en curso."
+
+    if str_to_dt(chat_data.get("active_night_sleep_start")):
+        return False, "Primero termina el sueño nocturno."
+
+    chat_data["active_day_nap_start"] = dt_to_str(start_dt)
+    add_history_event(chat_data, "day_nap_start", start_dt)
+    save_data()
+    return True, f"😴 Siesta iniciada a las {fmt_time(start_dt)}"
+
+
+def end_day_nap(chat_data: Dict[str, Any], end_dt: datetime) -> Tuple[bool, str]:
+    start_dt = str_to_dt(chat_data.get("active_day_nap_start"))
+    if not start_dt:
+        return False, "No hay una siesta en curso."
+
+    if end_dt < start_dt:
+        return False, "La hora final no puede ser antes del inicio."
+
+    duration = end_dt - start_dt
+    chat_data["active_day_nap_start"] = None
+    chat_data["last_day_nap_end"] = dt_to_str(end_dt)
+
+    add_history_event(
+        chat_data,
+        "day_nap_end",
+        end_dt,
+        extra={
+            "start_time": dt_to_str(start_dt),
+            "duration_minutes": int(duration.total_seconds() // 60),
+        },
+    )
+
+    reset_nap_reminders(chat_data)
+    save_data()
+    return True, f"😴 Siesta terminada a las {fmt_time(end_dt)} ({format_duration(duration)})"
+
+
+def start_night_sleep(chat_data: Dict[str, Any], start_dt: datetime) -> Tuple[bool, str]:
+    if str_to_dt(chat_data.get("active_night_sleep_start")):
+        return False, "Ya hay sueño nocturno en curso."
+
+    if str_to_dt(chat_data.get("active_day_nap_start")):
+        return False, "Primero termina la siesta actual."
+
+    chat_data["active_night_sleep_start"] = dt_to_str(start_dt)
+    add_history_event(chat_data, "night_sleep_start", start_dt)
+    save_data()
+    return True, f"🌙 Sueño nocturno iniciado a las {fmt_time(start_dt)}"
+
+
+def end_night_sleep(chat_data: Dict[str, Any], end_dt: datetime) -> Tuple[bool, str]:
+    start_dt = str_to_dt(chat_data.get("active_night_sleep_start"))
+    if not start_dt:
+        return False, "No hay sueño nocturno en curso."
+
+    if end_dt < start_dt:
+        return False, "La hora final no puede ser antes del inicio."
+
+    duration = end_dt - start_dt
+    chat_data["active_night_sleep_start"] = None
+
+    add_history_event(
+        chat_data,
+        "night_sleep_end",
+        end_dt,
+        extra={
+            "start_time": dt_to_str(start_dt),
+            "duration_minutes": int(duration.total_seconds() // 60),
+        },
+    )
+
+    save_data()
+    return True, f"🌙 Sueño nocturno terminado a las {fmt_time(end_dt)} ({format_duration(duration)})"
+
+
+# =========================
+# Textos
+# =========================
 def build_status_text(chat_data: Dict[str, Any]) -> str:
     last_feed = str_to_dt(chat_data.get("last_feed"))
-    last_nap = str_to_dt(chat_data.get("last_nap"))
     next_feed = next_feed_time(chat_data)
-    next_nap = next_nap_time(chat_data)
+
+    active_day_nap = str_to_dt(chat_data.get("active_day_nap_start"))
+    active_night_sleep = str_to_dt(chat_data.get("active_night_sleep_start"))
+    next_nap = next_day_nap_time(chat_data)
+    total_naps = total_day_nap_today(chat_data)
+
+    last_nap = last_completed_day_nap(chat_data)
+    last_nap_text = "—"
+    if last_nap:
+        last_nap_text = f"{fmt_time(last_nap['start'])} - {fmt_time(last_nap['end'])} ({format_duration(last_nap['duration'])})"
+
+    if active_day_nap:
+        nap_state = f"En curso desde {fmt_time(active_day_nap)}"
+    elif next_nap:
+        nap_state = f"Próxima siesta: {fmt_datetime(next_nap)}"
+    else:
+        nap_state = "Próxima siesta: —"
+
+    if active_night_sleep:
+        night_state = f"🌙 Sueño nocturno en curso desde {fmt_time(active_night_sleep)}"
+    else:
+        night_state = "🌙 Sueño nocturno: no activo"
 
     lines = [
         f"👶 Estado de {baby_name(chat_data)}",
@@ -296,26 +487,85 @@ def build_status_text(chat_data: Dict[str, Any]) -> str:
         f"🍼 Próxima comida: {fmt_datetime(next_feed)}",
         f"⏳ Falta comida: {format_remaining(next_feed)}",
         "",
-        f"😴 Última siesta: {fmt_datetime(last_nap)}",
-        f"😴 Próxima siesta: {fmt_datetime(next_nap)}",
-        f"⏳ Falta siesta: {format_remaining(next_nap)}",
+        f"😴 Última siesta completa: {last_nap_text}",
+        f"😴 {nap_state}",
+        f"⏳ Falta siesta: {'en curso' if active_day_nap else format_remaining(next_nap)}",
+        f"🕒 Total siestas de hoy: {format_duration(total_naps)}",
+        "",
+        night_state,
     ]
     return "\n".join(lines)
 
 
 def build_today_history_text(chat_data: Dict[str, Any]) -> str:
-    items = get_today_history(chat_data)
-    if not items:
+    events = get_today_events(chat_data)
+
+    if not events and not str_to_dt(chat_data.get("active_day_nap_start")) and not str_to_dt(chat_data.get("active_night_sleep_start")):
         return "📅 Hoy no hay registros todavía."
 
+    feeds = []
+    day_naps = []
+    night_sleep = []
+
+    for item in events:
+        event_type = item.get("type")
+        dt = item["dt"]
+
+        if event_type == "feed":
+            feeds.append(f"🍼 {dt.strftime('%H:%M')}")
+
+        elif event_type == "day_nap_end":
+            start_dt = str_to_dt(item.get("start_time"))
+            if start_dt:
+                duration = dt - start_dt
+                day_naps.append(
+                    f"😴 {start_dt.strftime('%H:%M')} - {dt.strftime('%H:%M')} ({format_duration(duration)})"
+                )
+
+        elif event_type == "night_sleep_end":
+            start_dt = str_to_dt(item.get("start_time"))
+            if start_dt:
+                duration = dt - start_dt
+                night_sleep.append(
+                    f"🌙 {start_dt.strftime('%d/%m %H:%M')} - {dt.strftime('%d/%m %H:%M')} ({format_duration(duration)})"
+                )
+
+    active_day_nap = str_to_dt(chat_data.get("active_day_nap_start"))
+    if active_day_nap and active_day_nap.date() == now_local().date():
+        day_naps.append(f"😴 {active_day_nap.strftime('%H:%M')} - en curso")
+
+    active_night_sleep = str_to_dt(chat_data.get("active_night_sleep_start"))
+    if active_night_sleep:
+        night_sleep.append(f"🌙 {active_night_sleep.strftime('%d/%m %H:%M')} - en curso")
+
     lines = ["📅 Historial de hoy", ""]
-    for item in items:
-        icon = "🍼" if item["type"] == "feed" else "😴"
-        label = "Comida" if item["type"] == "feed" else "Siesta"
-        lines.append(f"{icon} {label} - {item['dt'].strftime('%H:%M')}")
+
+    lines.append("🍼 Comidas:")
+    if feeds:
+        lines.extend(feeds)
+    else:
+        lines.append("—")
+
+    lines.append("")
+    lines.append(f"😴 Siestas del día ({format_duration(total_day_nap_today(chat_data))}):")
+    if day_naps:
+        lines.extend(day_naps)
+    else:
+        lines.append("—")
+
+    lines.append("")
+    lines.append("🌙 Sueño nocturno:")
+    if night_sleep:
+        lines.extend(night_sleep)
+    else:
+        lines.append("—")
+
     return "\n".join(lines)
 
 
+# =========================
+# Envíos
+# =========================
 async def send_with_keyboard(update: Update, text: str) -> None:
     if update.message:
         await update.message.reply_text(text, reply_markup=keyboard())
@@ -325,22 +575,8 @@ async def send_to_chat(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: s
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard())
 
 
-def register_feed(chat_data: Dict[str, Any], event_dt: datetime) -> None:
-    chat_data["last_feed"] = dt_to_str(event_dt)
-    add_history(chat_data, "feed", event_dt)
-    reset_feed_reminders(chat_data)
-    save_data()
-
-
-def register_nap(chat_data: Dict[str, Any], event_dt: datetime) -> None:
-    chat_data["last_nap"] = dt_to_str(event_dt)
-    add_history(chat_data, "nap", event_dt)
-    reset_nap_reminders(chat_data)
-    save_data()
-
-
 # =========================
-# Handlers comandos
+# Comandos
 # =========================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -352,7 +588,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     text = (
         f"Hola. Ya guardé este chat para los recordatorios de {baby_name(chat_data)}.\n\n"
-        "Usa los botones o /help."
+        "Usa /help para ver comandos."
     )
     await send_with_keyboard(update, text)
 
@@ -361,20 +597,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     text = (
         "Comandos:\n"
         "/start\n"
+        "/help\n"
+        "/setname Nombre\n"
         "/feed\n"
         "/feed HH:MM\n"
-        "/nap\n"
-        "/nap HH:MM\n"
+        "/napstart\n"
+        "/napstart HH:MM\n"
+        "/napend\n"
+        "/napend HH:MM\n"
+        "/nightstart\n"
+        "/nightstart HH:MM\n"
+        "/nightend\n"
+        "/nightend HH:MM\n"
         "/status\n"
-        "/history\n"
-        "/setname Nombre\n"
-        "/help"
+        "/history"
     )
     await send_with_keyboard(update, text)
 
 
 async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat or not update.message:
+    if not update.effective_chat:
         return
 
     chat_data = get_chat_state(update.effective_chat.id)
@@ -405,21 +647,15 @@ async def feed_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_with_keyboard(update, "Usa /feed HH:MM")
             return
         register_feed(chat_data, dt)
-        await send_with_keyboard(
-            update,
-            f"🍼 Comida registrada a las {fmt_time(dt)}",
-        )
+        await send_with_keyboard(update, f"🍼 Comida registrada a las {fmt_time(dt)}")
         return
 
     dt = now_local()
     register_feed(chat_data, dt)
-    await send_with_keyboard(
-        update,
-        f"🍼 Comida registrada a las {fmt_time(dt)}",
-    )
+    await send_with_keyboard(update, f"🍼 Comida registrada a las {fmt_time(dt)}")
 
 
-async def nap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def napstart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
         return
 
@@ -428,21 +664,75 @@ async def nap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if context.args:
         dt = parse_manual_time(context.args[0])
         if dt is None:
-            await send_with_keyboard(update, "Usa /nap HH:MM")
+            await send_with_keyboard(update, "Usa /napstart HH:MM")
             return
-        register_nap(chat_data, dt)
-        await send_with_keyboard(
-            update,
-            f"😴 Siesta registrada a las {fmt_time(dt)}",
-        )
+        ok, message = start_day_nap(chat_data, dt)
+        await send_with_keyboard(update, message)
         return
 
     dt = now_local()
-    register_nap(chat_data, dt)
-    await send_with_keyboard(
-        update,
-        f"😴 Siesta registrada a las {fmt_time(dt)}",
-    )
+    ok, message = start_day_nap(chat_data, dt)
+    await send_with_keyboard(update, message)
+
+
+async def napend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+
+    chat_data = get_chat_state(update.effective_chat.id)
+
+    if context.args:
+        dt = parse_manual_time(context.args[0])
+        if dt is None:
+            await send_with_keyboard(update, "Usa /napend HH:MM")
+            return
+        ok, message = end_day_nap(chat_data, dt)
+        await send_with_keyboard(update, message)
+        return
+
+    dt = now_local()
+    ok, message = end_day_nap(chat_data, dt)
+    await send_with_keyboard(update, message)
+
+
+async def nightstart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+
+    chat_data = get_chat_state(update.effective_chat.id)
+
+    if context.args:
+        dt = parse_manual_time(context.args[0])
+        if dt is None:
+            await send_with_keyboard(update, "Usa /nightstart HH:MM")
+            return
+        ok, message = start_night_sleep(chat_data, dt)
+        await send_with_keyboard(update, message)
+        return
+
+    dt = now_local()
+    ok, message = start_night_sleep(chat_data, dt)
+    await send_with_keyboard(update, message)
+
+
+async def nightend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+
+    chat_data = get_chat_state(update.effective_chat.id)
+
+    if context.args:
+        dt = parse_manual_time(context.args[0])
+        if dt is None:
+            await send_with_keyboard(update, "Usa /nightend HH:MM")
+            return
+        ok, message = end_night_sleep(chat_data, dt)
+        await send_with_keyboard(update, message)
+        return
+
+    dt = now_local()
+    ok, message = end_night_sleep(chat_data, dt)
+    await send_with_keyboard(update, message)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -460,7 +750,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # =========================
-# Handlers botones
+# Botones
 # =========================
 async def button_feed_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -471,21 +761,44 @@ async def button_feed_now(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await send_with_keyboard(update, f"🍼 Comida registrada a las {fmt_time(dt)}")
 
 
-async def button_nap_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat:
-        return
-    chat_data = get_chat_state(update.effective_chat.id)
-    dt = now_local()
-    register_nap(chat_data, dt)
-    await send_with_keyboard(update, f"😴 Siesta registrada a las {fmt_time(dt)}")
-
-
 async def button_feed_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send_with_keyboard(update, "Usa /feed HH:MM")
 
 
-async def button_nap_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_with_keyboard(update, "Usa /nap HH:MM")
+async def button_nap_start_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    dt = now_local()
+    ok, message = start_day_nap(chat_data, dt)
+    await send_with_keyboard(update, message)
+
+
+async def button_nap_end_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    dt = now_local()
+    ok, message = end_day_nap(chat_data, dt)
+    await send_with_keyboard(update, message)
+
+
+async def button_night_start_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    dt = now_local()
+    ok, message = start_night_sleep(chat_data, dt)
+    await send_with_keyboard(update, message)
+
+
+async def button_night_end_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    dt = now_local()
+    ok, message = end_night_sleep(chat_data, dt)
+    await send_with_keyboard(update, message)
 
 
 async def button_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -501,7 +814,7 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # =========================
-# Job automático
+# Recordatorios automáticos
 # =========================
 async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
     chats = STATE.get("chats", {})
@@ -529,9 +842,9 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
         daily = chat_data["daily_messages"]
 
         next_feed = next_feed_time(chat_data)
-        next_nap = next_nap_time(chat_data)
+        next_nap = next_day_nap_time(chat_data)
 
-        # Recordatorios comida
+        # Comida
         if next_feed:
             feed_15_time = next_feed - REMINDER_BEFORE
 
@@ -555,7 +868,7 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
                     reminders["feed_due_sent"] = True
                     changed = True
 
-        # Recordatorios siesta
+        # Siesta del día
         if next_nap:
             nap_15_time = next_nap - REMINDER_BEFORE
 
@@ -579,14 +892,14 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
                     reminders["nap_due_sent"] = True
                     changed = True
 
-        # Reinicio diario de mensajes automáticos
+        # Reinicio diario
         if daily.get("date") != current_date_str:
             daily["date"] = current_date_str
             daily["tummy_time_sent"] = False
             daily["calm_down_sent"] = False
             changed = True
 
-        # Tummy time por la mañana
+        # Tummy time
         tummy_dt = datetime(
             current_now.year,
             current_now.month,
@@ -604,7 +917,7 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
             daily["tummy_time_sent"] = True
             changed = True
 
-        # Bajar actividad por la tarde
+        # Bajar actividad
         calm_dt = datetime(
             current_now.year,
             current_now.month,
@@ -638,7 +951,7 @@ def main() -> None:
     global STATE
 
     if not BOT_TOKEN:
-        raise RuntimeError("Falta BOT_TOKEN en Secrets.")
+        raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
 
     STATE = load_data()
     save_data()
@@ -654,20 +967,23 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("setname", setname_command))
     application.add_handler(CommandHandler("feed", feed_command))
-    application.add_handler(CommandHandler("nap", nap_command))
+    application.add_handler(CommandHandler("napstart", napstart_command))
+    application.add_handler(CommandHandler("napend", napend_command))
+    application.add_handler(CommandHandler("nightstart", nightstart_command))
+    application.add_handler(CommandHandler("nightend", nightend_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("history", history_command))
 
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FEED_NOW}$"), button_feed_now))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NAP_NOW}$"), button_nap_now))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FEED_TIME}$"), button_feed_time))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NAP_TIME}$"), button_nap_time))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NAP_START_NOW}$"), button_nap_start_now))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NAP_END_NOW}$"), button_nap_end_now))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NIGHT_START_NOW}$"), button_night_start_now))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NIGHT_END_NOW}$"), button_night_end_now))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_STATUS}$"), button_status))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_HISTORY}$"), button_history))
 
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text)
-    )
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
 
     application.run_polling(drop_pending_updates=False)
 
