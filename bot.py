@@ -1039,7 +1039,7 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await send_to_chat(
                         context,
                         chat_id,
-                        f"😴 En 15 min toca siesta para {baby_name(chat_data)}.",---
+                        f"😴 En 15 min toca siesta para {baby_name(chat_data)}.",
                     )
                     reminders["nap_15_sent"] = True
                     changed = True
