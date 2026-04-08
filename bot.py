@@ -33,15 +33,17 @@ TUMMY_TIME_MINUTE = 30
 CALM_DOWN_HOUR = 18
 CALM_DOWN_MINUTE = 0
 
-# Botones
+# Botones (sin "con hora")
 BUTTON_FEED_NOW = "🍼 Comida ahora"
-BUTTON_FEED_TIME = "🍼 Comida con hora"
 BUTTON_NAP_START_NOW = "😴 Siesta inicia ahora"
 BUTTON_NAP_END_NOW = "😴 Siesta termina ahora"
 BUTTON_NIGHT_START_NOW = "🌙 Noche inicia ahora"
 BUTTON_NIGHT_END_NOW = "🌙 Noche termina ahora"
 BUTTON_STATUS = "📊 Ver estado"
 BUTTON_HISTORY = "📅 Historial de hoy"
+BUTTON_NEW_FOOD = "🍎 Alimento nuevo"
+BUTTON_FOOD_LIST = "📋 Lista alimentos"
+BUTTON_WEEKLY = "📈 Resumen semanal"
 
 # =========================
 # Logging
@@ -94,10 +96,12 @@ def fmt_datetime(dt: Optional[datetime]) -> str:
 def keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [BUTTON_FEED_NOW, BUTTON_FEED_TIME],
+            [BUTTON_FEED_NOW],
             [BUTTON_NAP_START_NOW, BUTTON_NAP_END_NOW],
             [BUTTON_NIGHT_START_NOW, BUTTON_NIGHT_END_NOW],
             [BUTTON_STATUS, BUTTON_HISTORY],
+            [BUTTON_NEW_FOOD, BUTTON_FOOD_LIST],
+            [BUTTON_WEEKLY],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -176,6 +180,8 @@ def default_chat_state() -> Dict[str, Any]:
         "active_day_nap_start": None,
         "active_night_sleep_start": None,
         "history": [],
+        "foods_tried": [],  # lista de alimentos probados
+        "pending_food_input": False,  # esperando input de alimento
         "reminders": {
             "feed_15_sent": False,
             "feed_due_sent": False,
@@ -363,6 +369,10 @@ def baby_name(chat_data: Dict[str, Any]) -> str:
     return name if name else "bebé"
 
 
+def is_night_sleep_active(chat_data: Dict[str, Any]) -> bool:
+    return str_to_dt(chat_data.get("active_night_sleep_start")) is not None
+
+
 # =========================
 # Registro de eventos
 # =========================
@@ -449,6 +459,99 @@ def end_night_sleep(chat_data: Dict[str, Any], end_dt: datetime) -> Tuple[bool, 
 
     save_data()
     return True, f"🌙 Sueño nocturno terminado a las {fmt_time(end_dt)} ({format_duration(duration)})"
+
+
+# =========================
+# Alimentos
+# =========================
+def add_food(chat_data: Dict[str, Any], food_name: str) -> str:
+    foods = chat_data.setdefault("foods_tried", [])
+    food_clean = food_name.strip().capitalize()
+    if food_clean.lower() in [f.lower() for f in foods]:
+        return f"⚠️ '{food_clean}' ya está en la lista."
+    foods.append(food_clean)
+    foods.sort()
+    save_data()
+    return f"✅ '{food_clean}' añadido a la lista de alimentos probados."
+
+
+def get_food_list(chat_data: Dict[str, Any]) -> str:
+    foods = chat_data.get("foods_tried", [])
+    if not foods:
+        return "📋 Todavía no hay alimentos registrados."
+    lines = [f"📋 Alimentos probados por {baby_name(chat_data)} ({len(foods)}):"]
+    for i, food in enumerate(foods, 1):
+        lines.append(f"{i}. {food}")
+    return "\n".join(lines)
+
+
+# =========================
+# Resumen semanal
+# =========================
+def build_weekly_summary(chat_data: Dict[str, Any]) -> str:
+    now = now_local()
+    week_ago = now - timedelta(days=7)
+
+    night_sleeps = []
+    daily_naps: Dict[str, timedelta] = {}
+
+    for item in chat_data.get("history", []):
+        dt = str_to_dt(item.get("time"))
+        if not dt or dt < week_ago:
+            continue
+
+        if item.get("type") == "night_sleep_end":
+            start_dt = str_to_dt(item.get("start_time"))
+            if start_dt:
+                duration = dt - start_dt
+                night_sleeps.append({
+                    "start": start_dt,
+                    "end": dt,
+                    "duration": duration,
+                })
+
+        elif item.get("type") == "day_nap_end":
+            start_dt = str_to_dt(item.get("start_time"))
+            if start_dt:
+                day_key = start_dt.date().isoformat()
+                duration = dt - start_dt
+                daily_naps[day_key] = daily_naps.get(day_key, timedelta()) + duration
+
+    lines = [f"📈 Resumen semanal de {baby_name(chat_data)}", ""]
+
+    # Sueño nocturno
+    lines.append("🌙 Sueño nocturno:")
+    if night_sleeps:
+        total_night = timedelta()
+        for ns in night_sleeps:
+            total_night += ns["duration"]
+            lines.append(
+                f"  {ns['start'].strftime('%d/%m')} — {fmt_time(ns['start'])} a {fmt_time(ns['end'])} ({format_duration(ns['duration'])})"
+            )
+        avg_night = total_night / len(night_sleeps)
+        lines.append(f"  Promedio: {format_duration(avg_night)}")
+        lines.append(f"  Total: {format_duration(total_night)}")
+    else:
+        lines.append("  Sin registros esta semana.")
+
+    lines.append("")
+
+    # Siestas diarias
+    lines.append("😴 Siestas por día:")
+    if daily_naps:
+        total_nap_week = timedelta()
+        for day_key in sorted(daily_naps.keys()):
+            day_dt = datetime.fromisoformat(day_key)
+            duration = daily_naps[day_key]
+            total_nap_week += duration
+            lines.append(f"  {day_dt.strftime('%d/%m')} — {format_duration(duration)}")
+        avg_nap = total_nap_week / len(daily_naps)
+        lines.append(f"  Promedio diario: {format_duration(avg_nap)}")
+        lines.append(f"  Total semana: {format_duration(total_nap_week)}")
+    else:
+        lines.append("  Sin registros esta semana.")
+
+    return "\n".join(lines)
 
 
 # =========================
@@ -599,18 +702,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start\n"
         "/help\n"
         "/setname Nombre\n"
-        "/feed\n"
-        "/feed HH:MM\n"
-        "/napstart\n"
-        "/napstart HH:MM\n"
-        "/napend\n"
-        "/napend HH:MM\n"
-        "/nightstart\n"
-        "/nightstart HH:MM\n"
-        "/nightend\n"
-        "/nightend HH:MM\n"
+        "/feed — comida ahora\n"
+        "/feed HH:MM — comida con hora\n"
+        "/napstart — siesta inicia ahora\n"
+        "/napstart HH:MM — siesta inicia con hora\n"
+        "/napend — siesta termina ahora\n"
+        "/napend HH:MM — siesta termina con hora\n"
+        "/nightstart — noche inicia ahora\n"
+        "/nightstart HH:MM — noche inicia con hora\n"
+        "/nightend — noche termina ahora\n"
+        "/nightend HH:MM — noche termina con hora\n"
         "/status\n"
-        "/history"
+        "/history\n"
+        "/addfood Nombre — añadir alimento\n"
+        "/foods — ver lista alimentos\n"
+        "/weekly — resumen semanal"
     )
     await send_with_keyboard(update, text)
 
@@ -749,6 +855,32 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await send_with_keyboard(update, build_today_history_text(chat_data))
 
 
+async def addfood_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    if not context.args:
+        await send_with_keyboard(update, "Usa /addfood NombreDelAlimento\nEjemplo: /addfood Zanahoria")
+        return
+    food_name = " ".join(context.args).strip()
+    result = add_food(chat_data, food_name)
+    await send_with_keyboard(update, result)
+
+
+async def foods_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    await send_with_keyboard(update, get_food_list(chat_data))
+
+
+async def weekly_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    await send_with_keyboard(update, build_weekly_summary(chat_data))
+
+
 # =========================
 # Botones
 # =========================
@@ -759,10 +891,6 @@ async def button_feed_now(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     dt = now_local()
     register_feed(chat_data, dt)
     await send_with_keyboard(update, f"🍼 Comida registrada a las {fmt_time(dt)}")
-
-
-async def button_feed_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_with_keyboard(update, "Usa /feed HH:MM")
 
 
 async def button_nap_start_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -809,8 +937,41 @@ async def button_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await history_command(update, context)
 
 
+async def button_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await weekly_command(update, context)
+
+
+async def button_new_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    chat_data["pending_food_input"] = True
+    save_data()
+    await send_with_keyboard(update, "🍎 Escribe el nombre del alimento nuevo:")
+
+
+async def button_food_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    await send_with_keyboard(update, get_food_list(chat_data))
+
+
 async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_with_keyboard(update, "Usa /help")
+    if not update.effective_chat or not update.message:
+        return
+
+    chat_data = get_chat_state(update.effective_chat.id)
+
+    # Si estamos esperando un alimento nuevo
+    if chat_data.get("pending_food_input"):
+        food_name = update.message.text.strip()
+        chat_data["pending_food_input"] = False
+        result = add_food(chat_data, food_name)
+        await send_with_keyboard(update, result)
+        return
+
+    await send_with_keyboard(update, "Usa /help para ver los comandos disponibles.")
 
 
 # =========================
@@ -843,6 +1004,7 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         next_feed = next_feed_time(chat_data)
         next_nap = next_day_nap_time(chat_data)
+        night_active = is_night_sleep_active(chat_data)
 
         # Comida
         if next_feed:
@@ -868,8 +1030,8 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
                     reminders["feed_due_sent"] = True
                     changed = True
 
-        # Siesta del día
-        if next_nap:
+        # Siesta del día — solo si NO hay sueño nocturno activo
+        if next_nap and not night_active:
             nap_15_time = next_nap - REMINDER_BEFORE
 
             if current_now >= nap_15_time and current_now < next_nap:
@@ -877,7 +1039,7 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await send_to_chat(
                         context,
                         chat_id,
-                        f"😴 En 15 min toca siesta para {baby_name(chat_data)}.",
+                        f"😴 En 15 min toca siesta para {baby_name(chat_data)}.",---
                     )
                     reminders["nap_15_sent"] = True
                     changed = True
@@ -973,15 +1135,20 @@ def main() -> None:
     application.add_handler(CommandHandler("nightend", nightend_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("history", history_command))
+    application.add_handler(CommandHandler("addfood", addfood_command))
+    application.add_handler(CommandHandler("foods", foods_command))
+    application.add_handler(CommandHandler("weekly", weekly_command))
 
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FEED_NOW}$"), button_feed_now))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FEED_TIME}$"), button_feed_time))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NAP_START_NOW}$"), button_nap_start_now))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NAP_END_NOW}$"), button_nap_end_now))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NIGHT_START_NOW}$"), button_night_start_now))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NIGHT_END_NOW}$"), button_night_end_now))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_STATUS}$"), button_status))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_HISTORY}$"), button_history))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NEW_FOOD}$"), button_new_food))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FOOD_LIST}$"), button_food_list))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_WEEKLY}$"), button_weekly))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
 
