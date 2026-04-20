@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from copy import deepcop
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
