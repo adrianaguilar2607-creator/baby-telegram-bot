@@ -19,16 +19,16 @@ filters,
 
 # =========================
 
-# Configuración
+# Configuracion
 
 # =========================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-TIMEZONE = ZoneInfo("Europe/Madrid")
+BOT_TOKEN = os.getenv(“BOT_TOKEN”)
+TIMEZONE = ZoneInfo(“Europe/Madrid”)
 DATA_FILE = Path(“baby_bot_data.json”)
 REMINDER_BEFORE = timedelta(minutes=15)
 
-# Horario base de Sofía (hora, minuto, tipo, etiqueta)
+# Horario base de Sofia (hora, minuto, tipo, etiqueta)
 
 SOFIA_SCHEDULE = [
 (5,  30, “biberon”,  “Biberón mañana (180ml)”),
@@ -44,7 +44,7 @@ SOFIA_SCHEDULE = [
 (22, 30, “biberon”,  “Toma nocturna (180ml)”),
 ]
 
-# Rangos de sueño por edad en meses (siestas_min_h, siestas_max_h, noche_min_h, noche_max_h)
+# Rangos de sueno por edad en meses (siestas_min_h, siestas_max_h, noche_min_h, noche_max_h)
 
 SLEEP_RANGES = {
 4:  (3.0, 5.0, 10.0, 12.0),
@@ -296,7 +296,7 @@ history.sort(key=lambda x: x.get(“time”, “”))
 
 # =========================
 
-# Horario dinámico
+# Horario dinamico
 
 # =========================
 
@@ -314,7 +314,7 @@ if dt > now:
 today_events.append((dt, tipo, label))
 if today_events:
 return min(today_events, key=lambda x: x[0])
-# Si no hay más eventos hoy, el primero de mañana
+# Si no hay mas eventos hoy, el primero de manana
 tomorrow = now + timedelta(days=1)
 h, m, tipo, label = SOFIA_SCHEDULE[0]
 dt = tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -408,7 +408,7 @@ add_history_event(chat_data, “day_nap_end”, end_dt, extra={
 save_data()
 
 ```
-# Comprueba rango de siestas del día
+# Comprueba rango de siestas del dia
 months = baby_age_months(chat_data)
 nap_min, nap_max, _, _ = get_sleep_range(months)
 total = total_day_nap_today(chat_data)
@@ -459,7 +459,7 @@ return True, (
 
 # =========================
 
-# Alimentación
+# Alimentacion
 
 # =========================
 
@@ -504,7 +504,7 @@ return “\n”.join(lines)
 
 # =========================
 
-# Menú semanal
+# Menu semanal
 
 # =========================
 
@@ -521,7 +521,7 @@ save_data()
 
 # =========================
 
-# Recomendación de sueño
+# Recomendacion de sueno
 
 # =========================
 
@@ -549,7 +549,7 @@ return “\n”.join(lines)
 
 # =========================
 
-# Transición a sólidos
+# Transicion a solidos
 
 # =========================
 
@@ -622,7 +622,7 @@ nap_min, nap_max, night_min, night_max = get_sleep_range(months)
 
 lines = [f"📈 Resumen semanal — {baby_name(chat_data)} ({months} meses)", ""]
 
-# Sueño nocturno
+# Sueno nocturno
 lines.append("🌙 Sueño nocturno:")
 if night_sleeps:
     total_night = timedelta()
@@ -661,7 +661,7 @@ else:
 
 lines.append("")
 
-# Alimentación
+# Alimentacion
 lines.append(f"🍼 Biberones esta semana: {len(biberones)}")
 lines.append(f"🥣 Sólidos esta semana: {len(solidos)}")
 
@@ -768,7 +768,7 @@ return "\n".join(lines)
 
 # =========================
 
-# Envíos
+# Envios
 
 # =========================
 
@@ -1034,7 +1034,7 @@ await send_with_keyboard(update, "Usa /help para ver los comandos.")
 
 # =========================
 
-# Recordatorios automáticos (horario de Sofía)
+# Recordatorios automaticos (horario de Sofia)
 
 # =========================
 
@@ -1077,7 +1077,7 @@ for chat_key, chat_data in chats.items():
         scheduled_dt = get_schedule_event_for_today(h, m)
         remind_dt = scheduled_dt - timedelta(minutes=15)
 
-        # No avisar siestas si hay sueño nocturno activo
+        # No avisar siestas si hay sueno nocturno activo
         if tipo == "nap" and night_active:
             continue
 
