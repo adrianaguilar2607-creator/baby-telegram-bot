@@ -24,7 +24,7 @@ filters,
 # =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TIMEZONE = ZoneInfo(“Europe/Madrid”)
+TIMEZONE = ZoneInfo("Europe/Madrid")
 DATA_FILE = Path(“baby_bot_data.json”)
 REMINDER_BEFORE = timedelta(minutes=15)
 
