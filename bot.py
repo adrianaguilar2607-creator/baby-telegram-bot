@@ -231,10 +231,14 @@ if not isinstance(history, list):
 chat_data["history"] = []
 return
 cutoff = now_local() - timedelta(days=14)
-chat_data["history"] = [
-item for item in history
-if isinstance(item, dict) and str_to_dt(item.get("time")) and str_to_dt(item.get("tim
-]
+cleaned = []
+for item in history:
+        if not isinstance(item, dict):
+            continue
+        dt = str_to_dt(item.get("time"))
+        if dt and dt >= cutoff:
+            cleaned.append(item)
+chat_data["history"] = cleaned
 def add_history_event(chat_data: Dict[str, Any], event_type: str, dt: datetime, extra: cleanup_old_history(chat_data)
 item = {"type": event_type, "time": dt_to_str(dt)}
 if extra:
