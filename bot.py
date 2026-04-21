@@ -1076,7 +1076,7 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
             if tipo == "nap" and night_active:
                 continue
 
-            if current_now >= remind_dt and current_now < scheduled_dt:
+            if current_now >= remind_dt and current_now < scheduled_dt and not sent.get(f"{event_key}_15"):
                 await send_to_chat(context, chat_id, f"⏰ En 15 min: {label}")
                 sent[f"{event_key}_15"] = True
                 changed = True
