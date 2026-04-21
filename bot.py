@@ -70,6 +70,7 @@ BUTTON_MENU     = "🗓️ Menú"
 BUTTON_SLEEP_REC = "💤 Rec. sueño"
 BUTTON_SCHEDULE = "🕐 Horario"
 BUTTON_TRANSITION = "🥄 Transición sólidos"
+BUTTON_UNDO     = "❌ Anular"
 
 # =========================
 # Logging
@@ -180,6 +181,7 @@ def keyboard() -> ReplyKeyboardMarkup:
             [BUTTON_STATUS, BUTTON_HISTORY, BUTTON_WEEKLY],
             [BUTTON_FOODS, BUTTON_MENU],
             [BUTTON_SLEEP_REC, BUTTON_SCHEDULE, BUTTON_TRANSITION],
+            [BUTTON_UNDO],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -307,6 +309,36 @@ def add_history_event(chat_data: Dict[str, Any], event_type: str, dt: datetime, 
     history = chat_data.setdefault("history", [])
     history.append(item)
     history.sort(key=lambda x: x.get("time", ""))
+
+
+def undo_last_event(chat_data: Dict[str, Any]) -> str:
+    """Elimina el último evento registrado y retorna mensaje descriptivo."""
+    history = chat_data.get("history", [])
+    if not history:
+        return "No hay registros para anular."
+    
+    # Encontrar el último evento (por tiempo)
+    last_event = max(history, key=lambda x: x.get("time", ""))
+    history.remove(last_event)
+    
+    event_type = last_event.get("type", "desconocido")
+    event_time = last_event.get("time", "")
+    dt = str_to_dt(event_time)
+    time_str = fmt_datetime(dt) if dt else event_time
+    
+    # Mapeo de tipos a emojis y nombres
+    type_names = {
+        "biberon": "🍼 Biberón",
+        "solido": "🥣 Sólido",
+        "day_nap_start": "😴 Siesta (inicio)",
+        "day_nap_end": "😴 Siesta (fin)",
+        "night_sleep_start": "🌙 Noche (inicio)",
+        "night_sleep_end": "🌙 Noche (fin)",
+    }
+    
+    event_name = type_names.get(event_type, event_type)
+    save_data()
+    return f"❌ Anulado: {event_name} a las {time_str}"
 
 
 # =========================
@@ -996,6 +1028,14 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await send_with_keyboard(update, build_schedule_text())
 
 
+async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    chat_data = get_chat_state(update.effective_chat.id)
+    msg = undo_last_event(chat_data)
+    await send_with_keyboard(update, msg)
+
+
 async def transition_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
         return
@@ -1183,6 +1223,7 @@ def main() -> None:
     application.add_handler(CommandHandler("weekly", weekly_command))
     application.add_handler(CommandHandler("sleeprec", sleep_rec_command))
     application.add_handler(CommandHandler("schedule", schedule_command))
+    application.add_handler(CommandHandler("undo", undo_command))
     application.add_handler(CommandHandler("transition", transition_command))
 
     application.add_handler(CallbackQueryHandler(callback_handler))
@@ -1197,6 +1238,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_MENU}$"), button_menu))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SLEEP_REC}$"), sleep_rec_command))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SCHEDULE}$"), schedule_command))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_UNDO}$"), undo_command))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_TRANSITION}$"), transition_command))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
