@@ -25,20 +25,23 @@ TIMEZONE = ZoneInfo("Europe/Madrid")
 DATA_FILE = Path("baby_bot_data.json")
 REMINDER_BEFORE = timedelta(minutes=15)
 
-# Horario base de Sofia (hora, minuto, tipo, etiqueta)
+# Horario base de Sofia (hora_inicio, min_inicio, hora_fin, min_fin, tipo, etiqueta)
 SOFIA_SCHEDULE = [
-    (5,  30, "biberon",  "Biberón mañana (180ml)"),
-    (8,  30, "nap",      "Siesta 1"),
-    (9,  30, "biberon",  "Biberón media mañana (180ml)"),
-    (11, 30, "solido",   "Sólido almuerzo (puré)"),
-    (12, 30, "nap",      "Siesta 2"),
-    (14,  0, "biberon",  "Biberón mediodía (210ml)"),
-    (15, 30, "nap",      "Siesta 3"),
-    (16, 30, "solido",   "Sólido merienda"),
-    (17, 30, "biberon",  "Biberón tarde (180ml)"),
-    (20,  0, "night",    "Dormir noche"),
-    (22, 30, "biberon",  "Toma nocturna (180ml)"),
+    (5,  30, 6,  0,  "biberon",  "Biberón mañana (180ml)"),
+    (8,  30, 9,  0,  "nap",      "Siesta 1"),
+    (9,  30, 10, 0,  "biberon",  "Biberón media mañana (180ml)"),
+    (11, 30, 12, 0,  "solido",   "Sólido almuerzo (puré)"),
+    (12, 30, 13, 0,  "nap",      "Siesta 2"),
+    (14, 0,  14, 30, "biberon",  "Biberón mediodía (210ml)"),
+    (15, 30, 16, 0,  "nap",      "Siesta 3"),
+    (16, 30, 17, 0,  "solido",   "Sólido merienda"),
+    (17, 30, 18, 0,  "biberon",  "Biberón tarde (180ml)"),
+    (20, 0,  20, 0,  "night",    "Dormir noche"),
+    (22, 30, 23, 0,  "biberon",  "Toma nocturna (180ml)"),
 ]
+
+# Vigilia maxima antes de dormir (en minutos)
+MAX_AWAKE_BEFORE_BEDTIME = 150  # 2.5 horas
 
 # Rangos de sueno por edad en meses (siestas_min_h, siestas_max_h, noche_min_h, noche_max_h)
 SLEEP_RANGES = {
@@ -65,6 +68,7 @@ BUTTON_WEEKLY   = "📈 Resumen semanal"
 BUTTON_FOODS    = "🍎 Alimentos"
 BUTTON_MENU     = "🗓️ Menú"
 BUTTON_SLEEP_REC = "💤 Rec. sueño"
+BUTTON_SCHEDULE = "🕐 Horario"
 BUTTON_TRANSITION = "🥄 Transición sólidos"
 
 # =========================
@@ -175,7 +179,7 @@ def keyboard() -> ReplyKeyboardMarkup:
             [BUTTON_NAP, BUTTON_NIGHT, BUTTON_FEED],
             [BUTTON_STATUS, BUTTON_HISTORY, BUTTON_WEEKLY],
             [BUTTON_FOODS, BUTTON_MENU],
-            [BUTTON_SLEEP_REC, BUTTON_TRANSITION],
+            [BUTTON_SLEEP_REC, BUTTON_SCHEDULE, BUTTON_TRANSITION],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -330,19 +334,34 @@ def find_next_schedule_event(chat_data: Dict[str, Any]) -> Optional[Tuple[dateti
     return (dt, tipo, label)
 
 
-def compare_with_schedule(event_type: str, actual_dt: datetime) -> str:
-    """Compara el momento registrado con el horario base y devuelve el desfase."""
+def compare_with_schedule(event_type: str, actual_dt: datetime, chat_data: Dict[str, Any]) -> str:
+    """Compara el momento registrado con el horario base y devuelve el desfase.
+    Calcula el desfase desde el FIN de la ventana esperada."""
     now = actual_dt
     best = None
     best_diff = None
-    for h, m, tipo, label in SOFIA_SCHEDULE:
+    best_offset = None
+    
+    for h_start, m_start, h_end, m_end, tipo, label in SOFIA_SCHEDULE:
         if tipo != event_type:
             continue
-        scheduled = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        diff = int((now - scheduled).total_seconds() / 60)
+        
+        # Hora de fin de la ventana esperada
+        window_end = now.replace(hour=h_end, minute=m_end, second=0, microsecond=0)
+        # Desfase = hora registrada - fin de ventana
+        diff = int((now - window_end).total_seconds() / 60)
+        
         if best_diff is None or abs(diff) < abs(best_diff):
             best_diff = diff
             best = label
+            best_offset = diff
+    
+    # Guardar offset en chat_data para usar en notificaciones
+    if best_offset is not None and chat_data is not None:
+        offsets = chat_data.setdefault("event_offsets", {})
+        offsets[event_type] = best_offset
+        save_data()
+    
     if best is None or best_diff is None:
         return ""
     return f"({best}: {format_diff(best_diff)})"
@@ -475,7 +494,7 @@ def register_biberon(chat_data: Dict[str, Any], dt: datetime) -> str:
     chat_data["last_biberon"] = dt_to_str(dt)
     add_history_event(chat_data, "biberon", dt)
     save_data()
-    diff = compare_with_schedule("biberon", dt)
+    diff = compare_with_schedule("biberon", dt, chat_data)
     return f"🍼 Biberón registrado a las {fmt_time(dt)} {diff}".strip()
 
 
@@ -483,7 +502,7 @@ def register_solido(chat_data: Dict[str, Any], dt: datetime) -> str:
     chat_data["last_solido"] = dt_to_str(dt)
     add_history_event(chat_data, "solido", dt)
     save_data()
-    diff = compare_with_schedule("solido", dt)
+    diff = compare_with_schedule("solido", dt, chat_data)
     return f"🥣 Sólido registrado a las {fmt_time(dt)} {diff}".strip()
 
 
@@ -551,6 +570,22 @@ def build_sleep_recommendation(chat_data: Dict[str, Any]) -> str:
         " 11m: siestas 1-2h · noche 10-12h",
         " 12m+: siestas 1-2h · noche 10-12h",
     ]
+    return "\n".join(lines)
+
+
+# =========================
+# Horario base
+# =========================
+def build_schedule_text() -> str:
+    """Construye el texto del horario base de Sofia."""
+    lines = ["🕐 Horario base — Sofía", ""]
+    
+    for h_start, m_start, h_end, m_end, tipo, label in SOFIA_SCHEDULE:
+        time_range = f"{h_start:02d}:{m_start:02d}-{h_end:02d}:{m_end:02d}"
+        lines.append(f"{time_range}  {label}")
+    
+    lines.append("")
+    lines.append("💡 Nota: El bot aprende de tus desfases y ajusta las notificaciones automáticamente.")
     return "\n".join(lines)
 
 
@@ -955,6 +990,12 @@ async def sleep_rec_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await send_with_keyboard(update, build_sleep_recommendation(get_chat_state(update.effective_chat.id)))
 
 
+async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    await send_with_keyboard(update, build_schedule_text())
+
+
 async def transition_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
         return
@@ -1063,17 +1104,31 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
             changed = True
 
         night_active = is_night_sleep_active(chat_data)
+        
+        # Obtener offset de eventos registrados (desfase)
+        offsets = chat_data.get("event_offsets", {})  # {"biberon": 45, "solido": -10, ...}
 
-        for h, m, tipo, label in SOFIA_SCHEDULE:
-            event_key = f"{h:02d}{m:02d}_{tipo}"
+        for h_start, m_start, h_end, m_end, tipo, label in SOFIA_SCHEDULE:
+            event_key = f"{h_start:02d}{m_start:02d}_{tipo}"
             if sent.get(event_key):
                 continue
 
-            scheduled_dt = get_schedule_event_for_today(h, m)
+            scheduled_dt = get_schedule_event_for_today(h_start, m_start)
+            
+            # Aplicar offset si existe para este tipo de evento
+            offset_minutes = offsets.get(tipo, 0)
+            scheduled_dt = scheduled_dt + timedelta(minutes=offset_minutes)
+            
             remind_dt = scheduled_dt - timedelta(minutes=15)
 
             # No avisar siestas si hay sueno nocturno activo
             if tipo == "nap" and night_active:
+                continue
+            
+            # No avisar si estamos en la ventana de vigilia antes de dormir (20:00 - 2.5h)
+            bedtime_dt = get_schedule_event_for_today(20, 0)
+            vigilia_start = bedtime_dt - timedelta(minutes=MAX_AWAKE_BEFORE_BEDTIME)
+            if current_now >= vigilia_start and current_now < bedtime_dt and tipo in ["biberon", "solido", "nap"]:
                 continue
 
             if current_now >= remind_dt and current_now < scheduled_dt and not sent.get(f"{event_key}_15"):
@@ -1127,6 +1182,7 @@ def main() -> None:
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("weekly", weekly_command))
     application.add_handler(CommandHandler("sleeprec", sleep_rec_command))
+    application.add_handler(CommandHandler("schedule", schedule_command))
     application.add_handler(CommandHandler("transition", transition_command))
 
     application.add_handler(CallbackQueryHandler(callback_handler))
@@ -1140,6 +1196,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FOODS}$"), button_foods))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_MENU}$"), button_menu))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SLEEP_REC}$"), sleep_rec_command))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SCHEDULE}$"), schedule_command))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_TRANSITION}$"), transition_command))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
