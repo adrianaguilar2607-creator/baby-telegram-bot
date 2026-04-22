@@ -178,7 +178,7 @@ def keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [BUTTON_NAP, BUTTON_NIGHT, BUTTON_FEED],
-            [BUTTON_STATUS, BUTTON_WEEKLY],
+            [BUTTON_STATUS],
             [BUTTON_FOODS, BUTTON_MENU],
             [BUTTON_SLEEP_REC, BUTTON_SCHEDULE, BUTTON_TRANSITION],
             [BUTTON_UNDO],
@@ -451,7 +451,7 @@ def start_day_nap(chat_data: Dict[str, Any], start_dt: datetime) -> Tuple[bool, 
     chat_data["active_day_nap_start"] = dt_to_str(start_dt)
     add_history_event(chat_data, "day_nap_start", start_dt)
     save_data()
-    diff = compare_with_schedule("nap", start_dt)
+    diff = compare_with_schedule("nap", start_dt, chat_data)
     return True, f"😴 Siesta iniciada a las {fmt_time(start_dt)} {diff}".strip()
 
 
@@ -945,15 +945,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data == "nap_start":
         ok, msg = start_day_nap(chat_data, now_local())
         await query.edit_message_text(msg)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
     elif data == "nap_end":
         ok, msg = end_day_nap(chat_data, now_local())
         await query.edit_message_text(msg)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
     elif data == "night_start":
         ok, msg = start_night_sleep(chat_data, now_local())
         await query.edit_message_text(msg)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
     elif data == "night_end":
         ok, msg = end_night_sleep(chat_data, now_local())
         await query.edit_message_text(msg)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
     elif data == "feed_biberon":
         msg = register_biberon(chat_data, now_local())
         await query.edit_message_text(msg)
@@ -1199,8 +1203,20 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # =========================
-# Recordatorios automaticos (horario de Sofia)
+# Recordatorios automaticos por intervalos
 # =========================
+BIBERON_INTERVAL_H = 4.0      # horas entre biberones
+NAP_INTERVAL_H = 3.5          # horas de vigilia antes de siguiente siesta
+BEDTIME_HOUR = 20             # hora fija de dormir
+BEDTIME_MINUTE = 0
+VIGILIA_MIN = 150             # minutos minimos de vigilia antes de dormir (2.5h)
+SOLIDO_WINDOWS = [            # ventanas fijas para sólidos (hora_inicio, min_inicio, hora_fin, min_fin, label)
+    (11, 30, 12, 0, "Sólido almuerzo (puré)"),
+    (16, 30, 17, 0, "Sólido merienda"),
+]
+REMIND_BEFORE = 15            # minutos antes para aviso previo
+
+
 async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
     chats = STATE.get("chats", {})
     if not isinstance(chats, dict):
@@ -1219,10 +1235,10 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
             continue
 
         cleanup_old_history(chat_data)
-        daily = chat_data.setdefault("daily_messages", {})
         sent = chat_data.setdefault("schedule_reminders_sent", {})
 
-        # Reseteo diario
+        # Reseteo diario a medianoche
+        daily = chat_data.setdefault("daily_messages", {})
         if daily.get("date") != current_date_str:
             daily["date"] = current_date_str
             chat_data["schedule_reminders_sent"] = {}
@@ -1230,40 +1246,70 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
             changed = True
 
         night_active = is_night_sleep_active(chat_data)
-        
-        # Obtener offset de eventos registrados (desfase)
-        offsets = chat_data.get("event_offsets", {})  # {"biberon": 45, "solido": -10, ...}
 
-        for h_start, m_start, h_end, m_end, tipo, label in SOFIA_SCHEDULE:
-            event_key = f"{h_start:02d}{m_start:02d}_{tipo}"
-            if sent.get(event_key):
-                continue
-
-            scheduled_dt = get_schedule_event_for_today(h_start, m_start)
-            
-            # Aplicar offset si existe para este tipo de evento
-            offset_minutes = offsets.get(tipo, 0)
-            scheduled_dt = scheduled_dt + timedelta(minutes=offset_minutes)
-            
-            remind_dt = scheduled_dt - timedelta(minutes=15)
-
-            # No avisar siestas si hay sueno nocturno activo
-            if tipo == "nap" and night_active:
-                continue
-            
-            # No avisar si estamos en la ventana de vigilia antes de dormir (20:00 - 2.5h)
-            bedtime_dt = get_schedule_event_for_today(20, 0)
-            vigilia_start = bedtime_dt - timedelta(minutes=MAX_AWAKE_BEFORE_BEDTIME)
-            if current_now >= vigilia_start and current_now < bedtime_dt and tipo in ["biberon", "solido", "nap"]:
-                continue
-
-            if current_now >= remind_dt and current_now < scheduled_dt and not sent.get(f"{event_key}_15"):
-                await send_to_chat(context, chat_id, f"⏰ En 15 min: {label}")
-                sent[f"{event_key}_15"] = True
+        # ── BIBERÓN (intervalo desde último registro) ──────────────────
+        last_bib = str_to_dt(chat_data.get("last_biberon"))
+        if last_bib:
+            next_bib = last_bib + timedelta(hours=BIBERON_INTERVAL_H)
+            bib_key = f"bib_{last_bib.strftime('%H%M')}"
+            if not sent.get(f"{bib_key}_15") and current_now >= next_bib - timedelta(minutes=REMIND_BEFORE) and current_now < next_bib:
+                await send_to_chat(context, chat_id, f"⏰ En 15 min: Biberón ({fmt_time(next_bib)})")
+                sent[f"{bib_key}_15"] = True
                 changed = True
-            elif current_now >= scheduled_dt and not sent.get(f"{event_key}_due"):
-                await send_to_chat(context, chat_id, f"🔔 Ahora toca: {label}")
-                sent[f"{event_key}_due"] = True
+            elif not sent.get(f"{bib_key}_due") and current_now >= next_bib:
+                await send_to_chat(context, chat_id, f"🔔 Ahora toca: Biberón")
+                sent[f"{bib_key}_due"] = True
+                changed = True
+
+        # ── SIESTA (intervalo de vigilia desde último despertar) ────────
+        if not night_active:
+            last_nap_end = str_to_dt(chat_data.get("last_day_nap_end"))
+            nap_active = str_to_dt(chat_data.get("active_day_nap_start"))
+            if last_nap_end and not nap_active:
+                next_nap = last_nap_end + timedelta(hours=NAP_INTERVAL_H)
+                nap_key = f"nap_{last_nap_end.strftime('%H%M')}"
+                # No avisar siesta si estamos en ventana de vigilia pre-noche
+                bedtime_dt = current_now.replace(hour=BEDTIME_HOUR, minute=BEDTIME_MINUTE, second=0, microsecond=0)
+                vigilia_start = bedtime_dt - timedelta(minutes=VIGILIA_MIN)
+                if current_now < vigilia_start:
+                    if not sent.get(f"{nap_key}_15") and current_now >= next_nap - timedelta(minutes=REMIND_BEFORE) and current_now < next_nap:
+                        await send_to_chat(context, chat_id, f"⏰ En 15 min: Siesta ({fmt_time(next_nap)})")
+                        sent[f"{nap_key}_15"] = True
+                        changed = True
+                    elif not sent.get(f"{nap_key}_due") and current_now >= next_nap:
+                        await send_to_chat(context, chat_id, f"🔔 Ahora toca: Siesta")
+                        sent[f"{nap_key}_due"] = True
+                        changed = True
+
+        # ── SÓLIDOS (ventanas fijas) ────────────────────────────────────
+        if not night_active:
+            for h_s, m_s, h_e, m_e, label in SOLIDO_WINDOWS:
+                sol_key = f"sol_{h_s:02d}{m_s:02d}"
+                scheduled = current_now.replace(hour=h_s, minute=m_s, second=0, microsecond=0)
+                if not sent.get(f"{sol_key}_15") and current_now >= scheduled - timedelta(minutes=REMIND_BEFORE) and current_now < scheduled:
+                    await send_to_chat(context, chat_id, f"⏰ En 15 min: {label}")
+                    sent[f"{sol_key}_15"] = True
+                    changed = True
+                elif not sent.get(f"{sol_key}_due") and current_now >= scheduled and current_now < scheduled + timedelta(minutes=30):
+                    await send_to_chat(context, chat_id, f"🔔 Ahora toca: {label}")
+                    sent[f"{sol_key}_due"] = True
+                    changed = True
+
+        # ── NOCHE (hora fija, respetando vigilia mínima) ───────────────
+        bedtime_dt = current_now.replace(hour=BEDTIME_HOUR, minute=BEDTIME_MINUTE, second=0, microsecond=0)
+        last_nap_end = str_to_dt(chat_data.get("last_day_nap_end"))
+        vigilia_ok = True
+        if last_nap_end:
+            vigilia_ok = (current_now - last_nap_end).total_seconds() / 60 >= VIGILIA_MIN
+
+        if not night_active and vigilia_ok:
+            if not sent.get("night_15") and current_now >= bedtime_dt - timedelta(minutes=REMIND_BEFORE) and current_now < bedtime_dt:
+                await send_to_chat(context, chat_id, f"⏰ En 15 min: Dormir noche (20:00)")
+                sent["night_15"] = True
+                changed = True
+            elif not sent.get("night_due") and current_now >= bedtime_dt and current_now < bedtime_dt + timedelta(minutes=30):
+                await send_to_chat(context, chat_id, f"🔔 Ahora toca: Dormir noche")
+                sent["night_due"] = True
                 changed = True
 
     if changed:
@@ -1305,8 +1351,6 @@ def main() -> None:
     application.add_handler(CommandHandler("biberon", biberon_command))
     application.add_handler(CommandHandler("solido", solido_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("history", history_command))
-    application.add_handler(CommandHandler("weekly", weekly_command))
     application.add_handler(CommandHandler("sleeprec", sleep_rec_command))
     application.add_handler(CommandHandler("schedule", schedule_command))
     application.add_handler(CommandHandler("undo", undo_command))
@@ -1318,8 +1362,6 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_NIGHT}$"), button_night))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FEED}$"), button_feed))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_STATUS}$"), status_command))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_HISTORY}$"), history_command))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_WEEKLY}$"), weekly_command))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FOODS}$"), button_foods))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_MENU}$"), button_menu))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SLEEP_REC}$"), sleep_rec_command))
