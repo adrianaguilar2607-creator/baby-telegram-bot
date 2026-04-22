@@ -178,7 +178,7 @@ def keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [BUTTON_NAP, BUTTON_NIGHT, BUTTON_FEED],
-            [BUTTON_STATUS, BUTTON_HISTORY, BUTTON_WEEKLY],
+            [BUTTON_STATUS, BUTTON_WEEKLY],
             [BUTTON_FOODS, BUTTON_MENU],
             [BUTTON_SLEEP_REC, BUTTON_SCHEDULE, BUTTON_TRANSITION],
             [BUTTON_UNDO],
@@ -353,16 +353,16 @@ def find_next_schedule_event(chat_data: Dict[str, Any]) -> Optional[Tuple[dateti
     """Devuelve (datetime, tipo, etiqueta) del próximo evento del horario."""
     now = now_local()
     today_events = []
-    for h, m, tipo, label in SOFIA_SCHEDULE:
-        dt = get_schedule_event_for_today(h, m)
+    for h_start, m_start, h_end, m_end, tipo, label in SOFIA_SCHEDULE:
+        dt = get_schedule_event_for_today(h_start, m_start)
         if dt > now:
             today_events.append((dt, tipo, label))
     if today_events:
         return min(today_events, key=lambda x: x[0])
     # Si no hay mas eventos hoy, el primero de manana
     tomorrow = now + timedelta(days=1)
-    h, m, tipo, label = SOFIA_SCHEDULE[0]
-    dt = tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
+    h_start, m_start, h_end, m_end, tipo, label = SOFIA_SCHEDULE[0]
+    dt = tomorrow.replace(hour=h_start, minute=m_start, second=0, microsecond=0)
     return (dt, tipo, label)
 
 
@@ -739,7 +739,93 @@ def build_weekly_summary(chat_data: Dict[str, Any]) -> str:
 # =========================
 # Estado
 # =========================
+def get_menu_today(chat_data: Dict[str, Any]) -> str:
+    """Extrae la comida y merienda del día actual del menú semanal."""
+    menu = chat_data.get("weekly_menu", "")
+    if not menu:
+        return ""
+    days_es = ["LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO", "DOMINGO"]
+    weekday = now_local().weekday()
+    today_key = days_es[weekday]
+    lines = menu.splitlines()
+    in_today = False
+    result = []
+    for line in lines:
+        stripped = line.strip().upper()
+        if stripped == today_key:
+            in_today = True
+            continue
+        if in_today:
+            if any(stripped == d.upper() for d in days_es):
+                break
+            if line.strip():
+                result.append(line.strip().lstrip("•").strip())
+    return "\n".join(result) if result else ""
+
+
 def build_status_text(chat_data: Dict[str, Any]) -> str:
+    now = now_local()
+    events = get_today_events(chat_data)
+    active_day_nap = str_to_dt(chat_data.get("active_day_nap_start"))
+    active_night_sleep = str_to_dt(chat_data.get("active_night_sleep_start"))
+    months = baby_age_months(chat_data)
+    nap_min, nap_max, night_min, night_max = get_sleep_range(months)
+    total_naps = total_day_nap_today(chat_data)
+    total_h = total_naps.total_seconds() / 3600
+    nap_status = sleep_status_emoji(total_h, nap_min, nap_max)
+    next_ev = find_next_schedule_event(chat_data)
+    next_text = f"{fmt_time(next_ev[0])} — {next_ev[2]}" if next_ev else "—"
+
+    biberones, solidos, day_naps, night_sleeps = [], [], [], []
+    for item in events:
+        t = item.get("type")
+        dt = item["dt"]
+        if t == "biberon":
+            biberones.append(f"  {dt.strftime('%H:%M')}")
+        elif t == "solido":
+            solidos.append(f"  {dt.strftime('%H:%M')}")
+        elif t == "day_nap_end":
+            start_dt = str_to_dt(item.get("start_time"))
+            if start_dt:
+                day_naps.append(f"  {start_dt.strftime('%H:%M')}-{dt.strftime('%H:%M')} ({format_duration(dt - start_dt)})")
+        elif t == "night_sleep_end":
+            start_dt = str_to_dt(item.get("start_time"))
+            if start_dt:
+                dur_h = (dt - start_dt).total_seconds() / 3600
+                status = sleep_status_emoji(dur_h, night_min, night_max)
+                night_sleeps.append(f"  {start_dt.strftime('%H:%M')}-{dt.strftime('%H:%M')} ({format_duration(dt - start_dt)}) {status}")
+
+    if active_day_nap and active_day_nap.date() == now.date():
+        day_naps.append(f"  {active_day_nap.strftime('%H:%M')} - en curso ⏳")
+    if active_night_sleep:
+        night_sleeps.append(f"  {active_night_sleep.strftime('%H:%M')} - en curso ⏳")
+
+    lines = [f"👶 {baby_name(chat_data)} — {months} meses", ""]
+
+    menu_hoy = get_menu_today(chat_data)
+    if menu_hoy:
+        lines.append("🍽️ Menú de hoy:")
+        for l in menu_hoy.splitlines():
+            lines.append(f"  {l}")
+        lines.append("")
+
+    lines.append(f"⏰ Próximo: {next_text}")
+    lines.append("")
+    lines.append("🍼 Biberones:")
+    lines.extend(biberones if biberones else ["  —"])
+    lines.append("🥣 Sólidos:")
+    lines.extend(solidos if solidos else ["  —"])
+    lines.append("")
+    lines.append(f"😴 Siestas ({format_duration(total_naps)} {nap_status} | rango {nap_min}h-{nap_max}h):")
+    lines.extend(day_naps if day_naps else ["  —"])
+    lines.append("")
+    lines.append("🌙 Sueño nocturno:")
+    lines.extend(night_sleeps if night_sleeps else ["  —"])
+    return "\n".join(lines)
+
+
+def build_today_history_text(chat_data: Dict[str, Any]) -> str:
+    return build_status_text(chat_data)
     active_day_nap = str_to_dt(chat_data.get("active_day_nap_start"))
     active_night_sleep = str_to_dt(chat_data.get("active_night_sleep_start"))
     total_naps = total_day_nap_today(chat_data)
