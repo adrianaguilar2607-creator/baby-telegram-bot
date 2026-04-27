@@ -63,14 +63,13 @@ BUTTON_NAP      = "😴 Siesta"
 BUTTON_NIGHT    = "🌙 Noche"
 BUTTON_FEED     = "🍼 Alimentación"
 BUTTON_STATUS   = "📊 Estado"
-BUTTON_HISTORY  = "📅 Historial"
-BUTTON_WEEKLY   = "📈 Resumen semanal"
 BUTTON_FOODS    = "🍎 Alimentos"
 BUTTON_MENU     = "🗓️ Menú"
-BUTTON_SLEEP_REC = "💤 Rec. sueño"
-BUTTON_SCHEDULE = "🕐 Horario"
-BUTTON_TRANSITION = "🥄 Transición sólidos"
+BUTTON_INFO     = "ℹ️ Info"
 BUTTON_UNDO     = "❌ Anular"
+BUTTON_SLEEP_REC   = "💤 Rec. sueño"
+BUTTON_SCHEDULE    = "🕐 Horario"
+BUTTON_TRANSITION  = "🥄 Transición sólidos"
 
 # =========================
 # Logging
@@ -178,10 +177,8 @@ def keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [BUTTON_NAP, BUTTON_NIGHT, BUTTON_FEED],
-            [BUTTON_STATUS],
-            [BUTTON_FOODS, BUTTON_MENU],
-            [BUTTON_SLEEP_REC, BUTTON_SCHEDULE, BUTTON_TRANSITION],
-            [BUTTON_UNDO],
+            [BUTTON_STATUS, BUTTON_FOODS, BUTTON_MENU],
+            [BUTTON_INFO, BUTTON_UNDO],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -189,39 +186,86 @@ def keyboard() -> ReplyKeyboardMarkup:
 
 
 def inline_nap() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("▶️ Iniciar siesta", callback_data="nap_start"),
-        InlineKeyboardButton("⏹️ Terminar siesta", callback_data="nap_end"),
-    ]])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("▶️ Iniciar siesta", callback_data="nap_start"),
+            InlineKeyboardButton("⏹️ Terminar siesta", callback_data="nap_end"),
+        ],
+        [InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")],
+    ])
 
 
 def inline_night() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("▶️ Iniciar noche", callback_data="night_start"),
-        InlineKeyboardButton("⏹️ Terminar noche", callback_data="night_end"),
-    ]])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("▶️ Iniciar noche", callback_data="night_start"),
+            InlineKeyboardButton("⏹️ Terminar noche", callback_data="night_end"),
+        ],
+        [InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")],
+    ])
 
 
 def inline_feed() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🍼 Biberón", callback_data="feed_biberon"),
-        InlineKeyboardButton("🥣 Sólido", callback_data="feed_solido"),
-    ]])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍼 Biberón", callback_data="feed_biberon"),
+            InlineKeyboardButton("🥣 Sólido", callback_data="feed_solido"),
+        ],
+        [InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")],
+    ])
 
 
 def inline_foods() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🍎 Nuevo alimento", callback_data="food_new"),
-        InlineKeyboardButton("📋 Ver lista", callback_data="food_list"),
-    ]])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍎 Nuevo alimento", callback_data="food_new"),
+            InlineKeyboardButton("📋 Ver lista", callback_data="food_list"),
+        ],
+        [InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")],
+    ])
 
 
 def inline_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("📖 Ver menú", callback_data="menu_view"),
-        InlineKeyboardButton("✏️ Guardar menú", callback_data="menu_save"),
-        InlineKeyboardButton("🗑️ Eliminar", callback_data="menu_delete"),
-    ]])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📖 Ver menú", callback_data="menu_view"),
+            InlineKeyboardButton("✏️ Guardar menú", callback_data="menu_save"),
+            InlineKeyboardButton("🗑️ Eliminar", callback_data="menu_delete"),
+        ],
+        [InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")],
+    ])
+
+
+def inline_info() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💤 Rec. sueño", callback_data="info_sleeprec"),
+            InlineKeyboardButton("🕐 Horario", callback_data="info_schedule"),
+            InlineKeyboardButton("🥄 Transición", callback_data="info_transition"),
+        ],
+        [InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")],
+    ])
+
+
+def inline_undo(events: list) -> InlineKeyboardMarkup:
+    """Muestra los últimos eventos para elegir cuál anular."""
+    type_names = {
+        "biberon": "🍼 Biberón",
+        "solido": "🥣 Sólido",
+        "day_nap_start": "😴 Siesta inicio",
+        "day_nap_end": "😴 Siesta fin",
+        "night_sleep_start": "🌙 Noche inicio",
+        "night_sleep_end": "🌙 Noche fin",
+    }
+    buttons = []
+    for i, item in enumerate(events):
+        t = item.get("type", "")
+        dt = str_to_dt(item.get("time"))
+        name = type_names.get(t, t)
+        time_str = dt.strftime("%H:%M") if dt else "?"
+        buttons.append([InlineKeyboardButton(f"{name} {time_str}", callback_data=f"undo_{i}")])
+    buttons.append([InlineKeyboardButton("↩️ Cancelar", callback_data="cancel")])
+    return InlineKeyboardMarkup(buttons)
 
 
 # =========================
@@ -503,6 +547,7 @@ def end_night_sleep(chat_data: Dict[str, Any], end_dt: datetime) -> Tuple[bool, 
         return False, "La hora final no puede ser antes del inicio."
     duration = end_dt - start_dt
     chat_data["active_night_sleep_start"] = None
+    chat_data["last_night_sleep_end"] = dt_to_str(end_dt)
     add_history_event(chat_data, "night_sleep_end", end_dt, extra={
         "start_time": dt_to_str(start_dt),
         "duration_minutes": int(duration.total_seconds() // 60),
@@ -541,15 +586,26 @@ def register_solido(chat_data: Dict[str, Any], dt: datetime) -> str:
 # =========================
 # Alimentos
 # =========================
-def add_food(chat_data: Dict[str, Any], food_name: str) -> str:
+def add_food(chat_data: Dict[str, Any], food_input: str) -> str:
     foods = chat_data.setdefault("foods_tried", [])
-    food_clean = food_name.strip().capitalize()
-    if food_clean.lower() in [f.lower() for f in foods]:
-        return f"⚠️ '{food_clean}' ya está en la lista."
-    foods.append(food_clean)
+    # Soporte para lista separada por comas o saltos de línea
+    items = [f.strip() for f in food_input.replace("\n", ",").split(",") if f.strip()]
+    added, skipped = [], []
+    for food_name in items:
+        food_clean = food_name.capitalize()
+        if food_clean.lower() in [f.lower() for f in foods]:
+            skipped.append(food_clean)
+        else:
+            foods.append(food_clean)
+            added.append(food_clean)
     foods.sort()
     save_data()
-    return f"✅ '{food_clean}' añadido."
+    lines = []
+    if added:
+        lines.append("✅ Añadidos: " + ", ".join(added))
+    if skipped:
+        lines.append("⚠️ Ya existían: " + ", ".join(skipped))
+    return "\n".join(lines) if lines else "Sin cambios."
 
 
 def get_food_list(chat_data: Dict[str, Any]) -> str:
@@ -942,34 +998,52 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     chat_data = get_chat_state(update.effective_chat.id)
     data = query.data
 
+    # Cancelar — cierra el submenú
+    if data == "cancel":
+        await query.edit_message_text("❎ Cancelado.")
+        return
+
+    # Siesta
     if data == "nap_start":
         ok, msg = start_day_nap(chat_data, now_local())
         await query.edit_message_text(msg)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
+        if ok:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
     elif data == "nap_end":
         ok, msg = end_day_nap(chat_data, now_local())
         await query.edit_message_text(msg)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
+        if ok:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
+
+    # Noche
     elif data == "night_start":
         ok, msg = start_night_sleep(chat_data, now_local())
         await query.edit_message_text(msg)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
+        if ok:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
     elif data == "night_end":
         ok, msg = end_night_sleep(chat_data, now_local())
         await query.edit_message_text(msg)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
+        if ok:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard())
+
+    # Alimentación
     elif data == "feed_biberon":
         msg = register_biberon(chat_data, now_local())
         await query.edit_message_text(msg)
     elif data == "feed_solido":
         msg = register_solido(chat_data, now_local())
         await query.edit_message_text(msg)
+
+    # Alimentos
     elif data == "food_new":
         chat_data["pending_food_input"] = True
         save_data()
-        await query.edit_message_text("🍎 Escribe el nombre del alimento:")
+        await query.edit_message_text("🍎 Escribe los alimentos (puedes poner varios separados por comas):")
     elif data == "food_list":
         await query.edit_message_text(get_food_list(chat_data))
+
+    # Menú
     elif data == "menu_view":
         menu = get_weekly_menu(chat_data)
         await query.edit_message_text(f"🗓️ Menú:\n\n{menu}" if menu else "No hay menú guardado.")
@@ -980,6 +1054,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "menu_delete":
         delete_weekly_menu(chat_data)
         await query.edit_message_text("🗑️ Menú eliminado.")
+
+    # Info
+    elif data == "info_sleeprec":
+        await query.edit_message_text(build_sleep_recommendation(chat_data))
+    elif data == "info_schedule":
+        await query.edit_message_text(build_schedule_text())
+    elif data == "info_transition":
+        await query.edit_message_text(TRANSITION_TEXT)
+
+    # Anular selectivo
+    elif data.startswith("undo_"):
+        idx = int(data.split("_")[1])
+        history = chat_data.get("history", [])
+        recent = sorted(history, key=lambda x: x.get("time", ""), reverse=True)[:5]
+        if idx < len(recent):
+            item = recent[idx]
+            history.remove(item)
+            save_data()
+            type_names = {
+                "biberon": "🍼 Biberón", "solido": "🥣 Sólido",
+                "day_nap_start": "😴 Siesta inicio", "day_nap_end": "😴 Siesta fin",
+                "night_sleep_start": "🌙 Noche inicio", "night_sleep_end": "🌙 Noche fin",
+            }
+            dt = str_to_dt(item.get("time"))
+            name = type_names.get(item.get("type", ""), item.get("type", ""))
+            time_str = dt.strftime("%H:%M") if dt else "?"
+            await query.edit_message_text(f"❌ Anulado: {name} a las {time_str}")
+        else:
+            await query.edit_message_text("⚠️ Evento no encontrado.")
 
 
 # =========================
@@ -1119,11 +1222,15 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_data = get_chat_state(update.effective_chat.id)
-    msg = undo_last_event(chat_data)
-    await send_with_keyboard(update, msg)
+    history = chat_data.get("history", [])
+    recent = sorted(history, key=lambda x: x.get("time", ""), reverse=True)[:5]
+    if not recent:
+        await send_with_keyboard(update, "No hay registros para anular.")
+        return
+    await update.message.reply_text("¿Qué quieres anular?", reply_markup=inline_undo(recent))
 
 
 async def transition_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1163,6 +1270,16 @@ async def button_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message:
         return
     await update.message.reply_text("🗓️ Menú semanal:", reply_markup=inline_menu())
+
+
+async def button_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await update.message.reply_text("ℹ️ Info:", reply_markup=inline_info())
+
+
+async def button_undo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await undo_command(update, context)
 
 
 # =========================
@@ -1265,6 +1382,14 @@ async def periodic_checks(context: ContextTypes.DEFAULT_TYPE) -> None:
         if not night_active:
             last_nap_end = str_to_dt(chat_data.get("last_day_nap_end"))
             nap_active = str_to_dt(chat_data.get("active_day_nap_start"))
+            
+            # Si no hay siesta hoy, usar la hora en que terminó la noche como referencia
+            last_night_end = str_to_dt(chat_data.get("last_night_sleep_end"))
+            if last_night_end and last_night_end.date() == current_now.date():
+                # Usar el más reciente entre fin de siesta y fin de noche
+                if last_nap_end is None or last_night_end > last_nap_end:
+                    last_nap_end = last_night_end
+
             if last_nap_end and not nap_active:
                 next_nap = last_nap_end + timedelta(hours=NAP_INTERVAL_H)
                 nap_key = f"nap_{last_nap_end.strftime('%H%M')}"
@@ -1364,10 +1489,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_STATUS}$"), status_command))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_FOODS}$"), button_foods))
     application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_MENU}$"), button_menu))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SLEEP_REC}$"), sleep_rec_command))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_SCHEDULE}$"), schedule_command))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_UNDO}$"), undo_command))
-    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_TRANSITION}$"), transition_command))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_INFO}$"), button_info))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BUTTON_UNDO}$"), button_undo))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
 
